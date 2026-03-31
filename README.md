@@ -7,13 +7,13 @@
     [x] - Status
     [x] - Method
     [x] - Headers
-    [ ] - Body
-[ ] - Abstract parsing
-[ ] - Abstract getting header key
-[ ] - HTTP Response creation
-    [ ] - string/html
-    [ ] - JSON - with some lib
-[ ] - Better path parsing, add `:params`
+    [x] - Body
+[x] - Abstract parsing
+[x] - Abstract getting header key
+[x] - HTTP Response creation
+    [x] - string/html
+    [x] - JSON - with some lib
+[ ] - Context Struct
 
 ## Future
 [ ] - io_uring
