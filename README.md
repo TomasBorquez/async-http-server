@@ -26,9 +26,9 @@
 - [ ] Find errors with fuzzing
 
 ## Resources
-https://bruinsslot.jp/post/simple-http-webserver-in-c/
-https://jvns.ca/blog/2017/06/03/async-io-on-linux--select--poll--and-epoll/
-https://stackoverflow.com/questions/66916835/c-confused-by-epoll-and-socket-fd-on-linux-systems-and-async-threads
-https://man7.org/linux/man-pages/man7/epoll.7.html
-https://github.com/DaveGamble/cJSON
-https://libaco.org/docs
+- https://bruinsslot.jp/post/simple-http-webserver-in-c/
+- https://jvns.ca/blog/2017/06/03/async-io-on-linux--select--poll--and-epoll/
+- https://stackoverflow.com/questions/66916835/c-confused-by-epoll-and-socket-fd-on-linux-systems-and-async-threads
+- https://man7.org/linux/man-pages/man7/epoll.7.html
+- https://github.com/DaveGamble/cJSON
+- https://libaco.org/docs
