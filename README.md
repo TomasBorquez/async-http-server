@@ -1,3 +1,33 @@
+# About
+This is my attempt at creating an Async HTTP Server in C, it's only planned to work on `linux_x86`
+and only on more "modern" kernel versions (5.6+), here is a simple example on how to use it along with
+cJSON:
+
+```c
+char *GetUsers(Request *req, Response *res) {
+  cJSON *users_array = cJSON_CreateArray();
+  for (size_t i = 0; i < users_len; i++) {
+      cJSON *user_object = cJSON_CreateObject();
+      cJSON_AddItemToArray(users_array, user_object);
+      cJSON_AddStringToObject(user_object, "username", users[i].username);
+      cJSON_AddStringToObject(user_object, "email", users[i].email);
+  }
+
+  cJSON_Delete(users_array);
+  return JSON(res, 200, users_array);
+}
+
+int main(void) {
+  Server server = NewServer(8080);
+
+  ServerGet(&server, "/users", &GetUsers);
+
+  ServerListen(&server);
+
+  return 0;
+}
+```
+
 ## TODOS
 - [x] Parse the HTTP request
 - [x] Respond to the HTTP request with some basic text
@@ -13,22 +43,21 @@
 - [x] HTTP Response creation
     - [x] string/html
     - [x] JSON - with some lib
-- [ ] Context Struct
-
-## Future
 - [ ] io_uring
     - [ ] Event loop
     - [ ] Async socket handling
-    - [ ] Async body parsing
-    - [ ] Async I/O
+    - [ ] Async `optional` body parsing
+    - [ ] Async file reading, and file writing
 - [ ] Add coroutines
 - [ ] Graph based routing
+- [ ] Context Struct
+- [ ] Properly free all resources
 - [ ] Find errors with fuzzing
+- [ ] Stress Test
 
 ## Resources
 - https://bruinsslot.jp/post/simple-http-webserver-in-c/
-- https://jvns.ca/blog/2017/06/03/async-io-on-linux--select--poll--and-epoll/
-- https://stackoverflow.com/questions/66916835/c-confused-by-epoll-and-socket-fd-on-linux-systems-and-async-threads
-- https://man7.org/linux/man-pages/man7/epoll.7.html
 - https://github.com/DaveGamble/cJSON
 - https://libaco.org/docs
+- https://www.man7.org/linux/man-pages/man7/io_uring.7.html
+- https://unixism.net/loti/tutorial/webserver_liburing.html

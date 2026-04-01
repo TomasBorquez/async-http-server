@@ -413,8 +413,6 @@ char *CreateUser(Request *req, Response *res) {
 int main(void) {
   Server server = NewServer(8080);
 
-  cJSON *test = cJSON_CreateObject();
-
   ServerGet(&server, "/users", &GetUsers);
   ServerPost(&server, "/user", &CreateUser);
 
