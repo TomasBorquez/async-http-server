@@ -353,6 +353,7 @@ void HandleClient(void) {
                             "\r\n";
 
   CoroCtx *ctx = aco_get_arg();
+  Server *server = ctx->server;
   LogSuccess("Connection accepted");
 
   int valread = async_recv(ctx, req_buffer, BUFFER_SIZE);
@@ -439,15 +440,15 @@ cleanup:
 }
 
 CoroCtx *add_accept(Server *server) {
-  CoroCtx *new_ctx = malloc(sizeof(CoroCtx));
-  new_ctx->type = ACCEPT;
-  new_ctx->server = server;
+  CoroCtx *ctx = malloc(sizeof(CoroCtx));
+  ctx->type = ACCEPT;
+  ctx->server = server;
 
   struct io_uring_sqe *sqe = io_uring_get_sqe(&g_state.ring);
   io_uring_prep_accept(sqe, server->sockfd, (struct sockaddr *) &server->client_addr, (socklen_t *) &server->client_addrlen, 0);
-  io_uring_sqe_set_data(sqe, new_ctx);
+  io_uring_sqe_set_data(sqe, ctx);
   io_uring_submit(&g_state.ring);
-  return new_ctx;
+  return ctx;
 }
 
 void ServerListen(Server *server){
@@ -457,7 +458,7 @@ void ServerListen(Server *server){
   g_state.shared_stack = aco_share_stack_new(0);
   io_uring_queue_init(4096, &g_state.ring, 0);
 
-  CoroCtx *new_ctx = add_accept(server);
+  add_accept(server);
 
   struct io_uring_cqe *cqe;
   while (true) {
@@ -482,12 +483,12 @@ void ServerListen(Server *server){
     if (ctx->type == ACCEPT) {
       if (res >= 0) {
         ctx->fd = res;
-        ctx->co = aco_create(g_state.main_co, g_state.shared_stack, 0, HandleClient, new_ctx);
+        ctx->co = aco_create(g_state.main_co, g_state.shared_stack, 0, HandleClient, ctx);
 
-        aco_resume(new_ctx->co);
-        if (new_ctx->co->is_end == true) {
-          aco_destroy(new_ctx->co);
-          free(new_ctx);
+        aco_resume(ctx->co);
+        if (ctx->co->is_end == true) {
+          aco_destroy(ctx->co);
+          free(ctx);
         }
       }
 
