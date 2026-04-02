@@ -2,6 +2,12 @@
 #include "base.h"
 #include "vendor/cJSON/cJSON.h"
 
+#define ACO_USE_ASAN
+#include "vendor/libaco/aco.h"
+
+#include <liburing.h>
+#include <sys/stat.h>
+#include <sys/ioctl.h>
 #include <arpa/inet.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -242,105 +248,253 @@ char *ConstructHeaders(Arena *arena, HeaderVector headers) {
   return response.buffer.data;
 }
 
-void ServerListen(Server *server){
+typedef enum {
+  ACCEPT,
+  GENERIC,
+} OpType;
+
+typedef struct {
+  int res;
+  aco_t *co;
+  int fd;
+  struct file_info *fi;
+  OpType type;
+} CoroCtx;
+
+typedef struct {
+  Server *server;
+  aco_t* main_co;
+  aco_share_stack_t* shared_stack;
+  struct io_uring ring;
+} State;
+State state = {0};
+
+int co_await(CoroCtx *ctx, struct io_uring_sqe *sqe ) {
+  io_uring_sqe_set_data(sqe, ctx);
+  io_uring_submit(&state.ring);
+  aco_yield();
+  return ctx->res;
+}
+
+size_t async_recv(CoroCtx *ctx, void *buff, size_t buff_size) {
+  struct io_uring_sqe *sqe = io_uring_get_sqe(&state.ring);
+  io_uring_prep_recv(sqe, ctx->fd, buff, buff_size, 0);
+  ctx->type = GENERIC;
+  return co_await(ctx, sqe);
+}
+
+size_t async_send(CoroCtx *ctx, void *buff, size_t buff_size) {
+  struct io_uring_sqe *sqe = io_uring_get_sqe(&state.ring);
+  io_uring_prep_send(sqe, ctx->fd, buff, buff_size, 0);
+  ctx->type = GENERIC;
+  return co_await(ctx, sqe);
+}
+
+off_t get_file_size(int fd) {
+    struct stat st;
+
+    if(fstat(fd, &st) < 0) {
+        perror("fstat");
+        return -1;
+    }
+
+    if (S_ISBLK(st.st_mode)) {
+        unsigned long long bytes;
+        if (ioctl(fd, BLKGETSIZE64, &bytes) != 0) {
+            perror("ioctl");
+            return -1;
+        }
+        return bytes;
+    } else if (S_ISREG(st.st_mode))
+        return st.st_size;
+
+    return -1;
+}
+
+typedef struct {
+    char *data;
+    off_t file_size;
+} FileInfo;
+
+FileInfo async_read_file(char *file_path) {
+  CoroCtx *ctx = aco_get_arg();
+  int file_fd = open(file_path, O_RDONLY);
+  Assert(file_fd >= 0, "Open failed with error %d", file_fd);
+
+  off_t file_size = get_file_size(file_fd);
+  char *buff = malloc(file_size + 1);
+  buff[file_size] = '\0';
+  ctx->type = GENERIC;
+
+  struct io_uring_sqe *sqe = io_uring_get_sqe(&state.ring);
+  io_uring_prep_read(sqe, file_fd, buff, file_size, 0);
+  io_uring_sqe_set_data(sqe, ctx);
+  io_uring_submit(&state.ring);
+  aco_yield();
+  return (FileInfo) { .data = buff, .file_size = file_size };
+}
+
+size_t async_write_file(char *file_path, String buff) {
+  CoroCtx *ctx = aco_get_arg();
+  int file_fd = open(file_path, O_WRONLY);
+  Assert(file_fd >= 0, "Open failed with error %d", file_fd);
+
+  struct io_uring_sqe *sqe = io_uring_get_sqe(&state.ring);
+  io_uring_prep_write(sqe, file_fd, buff.data, buff.length, 0);
+  ctx->type = GENERIC;
+  return co_await(ctx, sqe);
+}
+
+void HandleClient(void) {
   char req_buffer[BUFFER_SIZE];
   char default_response[] = "HTTP/1.0 404 Not Found\r\n"
                             "Server: webserver-c\r\n"
                             "\r\n";
 
-  while (true) {
-    int newsockfd = accept(server->sockfd, (struct sockaddr *)&server->host_addr, (socklen_t *)&server->host_addrlen);
-    if (newsockfd < 0) {
-      perror("webserver (accept)");
-      continue;
-    }
-    LogSuccess("Connection accepted");
+  Server *server = state.server;
+  CoroCtx *ctx = aco_get_arg();
+  LogSuccess("Connection accepted");
 
-    int sockn = getsockname(newsockfd, (struct sockaddr *)&server->client_addr, (socklen_t *)&server->client_addrlen);
-    if (sockn < 0) {
-      perror("webserver (getsockname)");
-      continue;
-    }
+  int valread = async_recv(ctx, req_buffer, BUFFER_SIZE);
+  if (valread < 0) {
+    perror("webserver (read)");
+    goto cleanup;
+  }
+  req_buffer[valread] = '\0';
 
-    int valread = read(newsockfd, req_buffer, BUFFER_SIZE);
-    if (valread < 0) {
-      perror("webserver (read)");
-      continue;
-    }
-    req_buffer[valread] = '\0';
+  char *body_start = "";
+  Request req = ParseRequest(req_buffer, &body_start);
+  char *content_length = GetHeader(&req, "Content-Length");
+  if (*content_length != '\0') {
+    size_t content_size = strtoul(content_length, NULL, 10);
+    LogInfo("content_size = %lu", content_size);
 
-    char *body_start = "";
-    Request req = ParseRequest(req_buffer, &body_start);
-    char *content_length = GetHeader(&req, "Content-Length");
-    if (*content_length != '\0') {
-      size_t content_size = strtoul(content_length, NULL, 10);
-      LogInfo("content_size = %lu", content_size);
+    char *body_buffer = malloc(content_size + 1);
+    size_t total = strlen(body_start);
+    if (total > content_size) total = content_size;
 
-      char *body_buffer = malloc(content_size + 1);
-      size_t total = strlen(body_start);
-      if (total > content_size) total = content_size;
+    mempcpy(body_buffer, body_start, total);
 
-      mempcpy(body_buffer, body_start, total);
-
-      while (total < content_size) {
-        ssize_t n = recv(server->sockfd, body_buffer + total, content_size - total, 0);
-        if (n < 0) {
-          LogError("recv error: %s", strerror(n));
-          break;
-        }
-        if (n == 0) {
-          LogError("client closed connection");
-          break;
-        }
-        total += n;
-      }
-      body_buffer[total] = '\0';
-      req.body = body_buffer;
-      req.body_length = total;
-
-      LogInfo("body_buffer: %s", body_buffer);
-    }
-
-    bool found = false;
-    Response res = { .status = 200, .response_body = "" };
-    for (size_t i = 0; i < server->num_paths; i++) {
-      Path curr_path = server->paths[i];
-      if (strcmp(curr_path.path, req.path) == 0 && req.method == curr_path.method) {
-        res.response_body = curr_path.handler(&req, &res);
-        found = true;
+    while (total < content_size) {
+      ssize_t n = async_recv(ctx, body_buffer + total, content_size - total);
+      if (n < 0) {
+        LogError("recv error: %s", strerror(n));
         break;
       }
+      if (n == 0) {
+        LogError("client closed connection");
+        break;
+      }
+      total += n;
+    }
+    body_buffer[total] = '\0';
+    req.body = body_buffer;
+    req.body_length = total;
+
+    LogInfo("body_buffer: %s", body_buffer);
+  }
+
+  bool found = false;
+  Response res = {.status = 200, .response_body = ""};
+  for (size_t i = 0; i < server->num_paths; i++) {
+    Path curr_path = server->paths[i];
+    if (strcmp(curr_path.path, req.path) == 0 && req.method == curr_path.method) {
+      res.response_body = curr_path.handler(&req, &res);
+      found = true;
+      break;
+    }
+  }
+
+  if (!found) {
+    LogWarn("Could not match path=%s and method=%d", req.path, req.method);
+    int valwrite = async_send(ctx, default_response, sizeof(default_response));
+    if (valwrite < 0) {
+      perror("webserver (write)");
+    }
+    goto cleanup;
+  }
+
+  Arena *arena = ArenaCreate(8000);
+  String response = F(arena,
+                      "HTTP/1.0 %lu %s\r\n"
+                      "Server: webserver-c\r\n"
+                      "%s"
+                      "\r\n"
+                      "%s",
+                      res.status,
+                      StatusMatch(res.status),
+                      ConstructHeaders(arena, res.headers),
+                      res.response_body);
+
+  LogInfo("FinalResponse: %s", response.data);
+  int valwrite = async_send(ctx, response.data, response.length);
+  if (valwrite < 0) {
+    perror("webserver (write)");
+    goto cleanup;
+  }
+
+cleanup:
+  close(ctx->fd);
+  aco_exit();
+}
+
+void ServerListen(Server *server){
+  state.server = server;
+  aco_thread_init(NULL);
+
+  state.main_co = aco_create(NULL, NULL, 0, NULL, NULL);
+  state.shared_stack = aco_share_stack_new(0);
+  io_uring_queue_init(4096, &state.ring, 0);
+
+  CoroCtx *new_ctx = malloc(sizeof(CoroCtx));
+  new_ctx->type = ACCEPT;
+
+  struct io_uring_sqe *sqe = io_uring_get_sqe(&state.ring);
+  io_uring_prep_accept(sqe, server->sockfd, (struct sockaddr *) &server->client_addr, (socklen_t *) &server->client_addrlen, 0);
+  io_uring_sqe_set_data(sqe, new_ctx);
+  io_uring_submit(&state.ring);
+
+  struct io_uring_cqe *cqe;
+  while (true) {
+    if (io_uring_wait_cqe(&state.ring, &cqe)) {
+      perror("io_uring_wait_cqe");
+      continue;
     }
 
-    if (!found) {
-      LogWarn("Could not match path=%s and method=%d", req.path, req.method);
-      int valwrite = write(newsockfd, default_response, sizeof(default_response));
-      if (valwrite < 0) {
-        perror("webserver (write)");
+    CoroCtx *ctx = io_uring_cqe_get_data(cqe);
+    int res = cqe->res;
+    io_uring_cqe_seen(&state.ring, cqe);
+    if (ctx->type == GENERIC) {
+      ctx->res = res;
+      aco_resume(ctx->co);
+
+      if (ctx->co->is_end == true) {
+        aco_destroy(ctx->co);
+        free(ctx);
       }
       continue;
     }
+    if (ctx->type == ACCEPT) {
+      if (res >= 0) {
+        ctx->fd = res;
+        ctx->co = aco_create(state.main_co, state.shared_stack, 0, HandleClient, new_ctx);
 
-    Arena *arena = ArenaCreate(8000);
-    String response = F(arena,
-                        "HTTP/1.0 %lu %s\r\n"
-                        "Server: webserver-c\r\n"
-                        "%s"
-                        "\r\n"
-                        "%s",
-                        res.status,
-                        StatusMatch(res.status),
-                        ConstructHeaders(arena, res.headers),
-                        res.response_body);
+        aco_resume(new_ctx->co);
+        if (new_ctx->co->is_end == true) {
+          aco_destroy(new_ctx->co);
+          free(new_ctx);
+        }
+      }
 
-    LogInfo("FinalResponse: %s", response.data);
-    int valwrite = write(newsockfd, response.data, response.length);
-    if (valwrite < 0) {
-      perror("webserver (write)");
+      CoroCtx *new_ctx = malloc(sizeof(CoroCtx));
+      new_ctx->type = ACCEPT;
+
+      struct io_uring_sqe *sqe = io_uring_get_sqe(&state.ring);
+      io_uring_prep_accept(sqe, server->sockfd, (struct sockaddr *) &server->client_addr, (socklen_t *) &server->client_addrlen, 0);
+      io_uring_sqe_set_data(sqe, new_ctx);
+      io_uring_submit(&state.ring);
       continue;
     }
-
-    close(newsockfd);
   }
 }
 
@@ -355,14 +509,21 @@ User users[50] = {
 };
 size_t users_len = 2;
 
-char *JSON(Response *res, cJSON *object) {
+char *JSON(Response *res, size_t status, cJSON *object) {
   Header header = {
     .key = "Content-Type",
     .value = "application/json"
   };
 
+  res->status = status;
   VecPush(res->headers, header)
   return cJSON_Print(object);
+}
+
+void output_to_console(char *buf, int len) {
+    while (len--) {
+        fputc(*buf++, stdout);
+    }
 }
 
 char *GetUsers(Request *req, Response *res) {
@@ -373,12 +534,16 @@ char *GetUsers(Request *req, Response *res) {
       cJSON_AddStringToObject(user_object, "username", users[i].username);
       cJSON_AddStringToObject(user_object, "email", users[i].email);
   }
-  res->status = 200;
-  // TODO: FREE
-  return JSON(res, users_array);
+
+  async_write_file("./test_file.md", S("this is a test"));
+  FileInfo file_info = async_read_file("./test_file.md");
+  LogInfo("file_info: %s", file_info.data);
+
+  return JSON(res, 200, users_array);
 }
 
 char *CreateUser(Request *req, Response *res) {
+  char *response = "";
   cJSON *users_json = cJSON_Parse(req->body);
   if (users_json == NULL) {
       const char *error_ptr = cJSON_GetErrorPtr();
@@ -386,28 +551,35 @@ char *CreateUser(Request *req, Response *res) {
           LogError("error before: %s", error_ptr);
       }
       res->status = 400;
-      return "";
+      response = "INVALID JSON";
+      goto cleanup;
   }
 
   User user = {0};
   cJSON *username = cJSON_GetObjectItemCaseSensitive(users_json, "username");
   if (!cJSON_IsString(username) || (username->valuestring == NULL)) {
     res->status = 400;
-    return "";
+    response = "INVALID JSON";
+    goto cleanup;
   }
 
   cJSON *email = cJSON_GetObjectItemCaseSensitive(users_json, "email");
   if (!cJSON_IsString(email) || (email->valuestring == NULL)) {
     res->status = 400;
-    return "";
+    response = "INVALID JSON";
+    goto cleanup;
   }
 
   user.username = username->valuestring;
   user.email = email->valuestring;
   users[users_len++] = user;
-
   res->status = 201;
-  return "CREATED YOUR USER";
+
+cleanup:
+  cJSON_Delete(users_json);
+  cJSON_Delete(username);
+  cJSON_Delete(email);
+  return response;
 }
 
 int main(void) {

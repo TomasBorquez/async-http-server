@@ -43,15 +43,18 @@ int main(void) {
 - [x] HTTP Response creation
     - [x] string/html
     - [x] JSON - with some lib
-- [ ] io_uring
-    - [ ] Event loop
-    - [ ] Async socket handling
+- [x] io_uring
+    - [x] Event loop
+    - [x] Async socket handling
+    - [x] Add coroutines
+    - [x] Async file reading, and file writing
     - [ ] Async `optional` body parsing
-    - [ ] Async file reading, and file writing
-- [ ] Add coroutines
-- [ ] Graph based routing
 - [ ] Context Struct
 - [ ] Properly free all resources
+
+## Future
+- [ ] Optimize io_uring
+- [ ] Graph based routing
 - [ ] Find errors with fuzzing
 - [ ] Stress Test
 
