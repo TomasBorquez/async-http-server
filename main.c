@@ -1,10 +1,3 @@
-#define BASE_IMPLEMENTATION
-#include "base.h"
-#include "vendor/cJSON/cJSON.h"
-
-#define ACO_USE_ASAN
-#include "vendor/libaco/aco.h"
-
 #include <liburing.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
@@ -14,6 +7,14 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+#include "vendor/cJSON/cJSON.h"
+
+#define BASE_IMPLEMENTATION
+#include "vendor/base/base.h"
+
+#define ACO_USE_ASAN
+#include "vendor/libaco/aco.h"
 
 #define BUFFER_SIZE 1024
 
@@ -255,36 +256,36 @@ typedef enum {
 
 typedef struct {
   int res;
-  aco_t *co;
   int fd;
-  struct file_info *fi;
+
+  aco_t *co;
+  Server *server;
   OpType type;
 } CoroCtx;
 
 typedef struct {
-  Server *server;
   aco_t* main_co;
   aco_share_stack_t* shared_stack;
   struct io_uring ring;
 } State;
-State state = {0};
+State g_state = {0};
 
 int co_await(CoroCtx *ctx, struct io_uring_sqe *sqe ) {
   io_uring_sqe_set_data(sqe, ctx);
-  io_uring_submit(&state.ring);
+  io_uring_submit(&g_state.ring);
   aco_yield();
   return ctx->res;
 }
 
 size_t async_recv(CoroCtx *ctx, void *buff, size_t buff_size) {
-  struct io_uring_sqe *sqe = io_uring_get_sqe(&state.ring);
+  struct io_uring_sqe *sqe = io_uring_get_sqe(&g_state.ring);
   io_uring_prep_recv(sqe, ctx->fd, buff, buff_size, 0);
   ctx->type = GENERIC;
   return co_await(ctx, sqe);
 }
 
 size_t async_send(CoroCtx *ctx, void *buff, size_t buff_size) {
-  struct io_uring_sqe *sqe = io_uring_get_sqe(&state.ring);
+  struct io_uring_sqe *sqe = io_uring_get_sqe(&g_state.ring);
   io_uring_prep_send(sqe, ctx->fd, buff, buff_size, 0);
   ctx->type = GENERIC;
   return co_await(ctx, sqe);
@@ -326,10 +327,10 @@ FileInfo async_read_file(char *file_path) {
   buff[file_size] = '\0';
   ctx->type = GENERIC;
 
-  struct io_uring_sqe *sqe = io_uring_get_sqe(&state.ring);
+  struct io_uring_sqe *sqe = io_uring_get_sqe(&g_state.ring);
   io_uring_prep_read(sqe, file_fd, buff, file_size, 0);
   io_uring_sqe_set_data(sqe, ctx);
-  io_uring_submit(&state.ring);
+  io_uring_submit(&g_state.ring);
   aco_yield();
   return (FileInfo) { .data = buff, .file_size = file_size };
 }
@@ -339,7 +340,7 @@ size_t async_write_file(char *file_path, String buff) {
   int file_fd = open(file_path, O_WRONLY);
   Assert(file_fd >= 0, "Open failed with error %d", file_fd);
 
-  struct io_uring_sqe *sqe = io_uring_get_sqe(&state.ring);
+  struct io_uring_sqe *sqe = io_uring_get_sqe(&g_state.ring);
   io_uring_prep_write(sqe, file_fd, buff.data, buff.length, 0);
   ctx->type = GENERIC;
   return co_await(ctx, sqe);
@@ -351,7 +352,6 @@ void HandleClient(void) {
                             "Server: webserver-c\r\n"
                             "\r\n";
 
-  Server *server = state.server;
   CoroCtx *ctx = aco_get_arg();
   LogSuccess("Connection accepted");
 
@@ -438,32 +438,37 @@ cleanup:
   aco_exit();
 }
 
-void ServerListen(Server *server){
-  state.server = server;
-  aco_thread_init(NULL);
-
-  state.main_co = aco_create(NULL, NULL, 0, NULL, NULL);
-  state.shared_stack = aco_share_stack_new(0);
-  io_uring_queue_init(4096, &state.ring, 0);
-
+CoroCtx *add_accept(Server *server) {
   CoroCtx *new_ctx = malloc(sizeof(CoroCtx));
   new_ctx->type = ACCEPT;
+  new_ctx->server = server;
 
-  struct io_uring_sqe *sqe = io_uring_get_sqe(&state.ring);
+  struct io_uring_sqe *sqe = io_uring_get_sqe(&g_state.ring);
   io_uring_prep_accept(sqe, server->sockfd, (struct sockaddr *) &server->client_addr, (socklen_t *) &server->client_addrlen, 0);
   io_uring_sqe_set_data(sqe, new_ctx);
-  io_uring_submit(&state.ring);
+  io_uring_submit(&g_state.ring);
+  return new_ctx;
+}
+
+void ServerListen(Server *server){
+  aco_thread_init(NULL);
+
+  g_state.main_co = aco_create(NULL, NULL, 0, NULL, NULL);
+  g_state.shared_stack = aco_share_stack_new(0);
+  io_uring_queue_init(4096, &g_state.ring, 0);
+
+  CoroCtx *new_ctx = add_accept(server);
 
   struct io_uring_cqe *cqe;
   while (true) {
-    if (io_uring_wait_cqe(&state.ring, &cqe)) {
+    if (io_uring_wait_cqe(&g_state.ring, &cqe)) {
       perror("io_uring_wait_cqe");
       continue;
     }
 
     CoroCtx *ctx = io_uring_cqe_get_data(cqe);
     int res = cqe->res;
-    io_uring_cqe_seen(&state.ring, cqe);
+    io_uring_cqe_seen(&g_state.ring, cqe);
     if (ctx->type == GENERIC) {
       ctx->res = res;
       aco_resume(ctx->co);
@@ -477,7 +482,7 @@ void ServerListen(Server *server){
     if (ctx->type == ACCEPT) {
       if (res >= 0) {
         ctx->fd = res;
-        ctx->co = aco_create(state.main_co, state.shared_stack, 0, HandleClient, new_ctx);
+        ctx->co = aco_create(g_state.main_co, g_state.shared_stack, 0, HandleClient, new_ctx);
 
         aco_resume(new_ctx->co);
         if (new_ctx->co->is_end == true) {
@@ -486,13 +491,7 @@ void ServerListen(Server *server){
         }
       }
 
-      CoroCtx *new_ctx = malloc(sizeof(CoroCtx));
-      new_ctx->type = ACCEPT;
-
-      struct io_uring_sqe *sqe = io_uring_get_sqe(&state.ring);
-      io_uring_prep_accept(sqe, server->sockfd, (struct sockaddr *) &server->client_addr, (socklen_t *) &server->client_addrlen, 0);
-      io_uring_sqe_set_data(sqe, new_ctx);
-      io_uring_submit(&state.ring);
+      add_accept(server);
       continue;
     }
   }
