@@ -49,11 +49,8 @@ int main(void) {
     - [x] Add coroutines
     - [x] Async file reading, and file writing
     - [ ] Async `optional` body parsing
-- [ ] Context Struct
-- [ ] Properly free all resources
-
-## Future
 - [ ] Optimize io_uring
+- [ ] Properly free all resources
 - [ ] Graph based routing
 - [ ] Find errors with fuzzing
 - [ ] Stress Test

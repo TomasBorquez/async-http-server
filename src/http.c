@@ -247,7 +247,7 @@ static void handle_client(void) {
 
   if (!found) {
     LogWarn("Could not match path=%s and method=%d", req.path, req.method);
-    int valwrite = AsyncSend(ctx, default_response, sizeof(default_response));
+    size_t valwrite = AsyncSend(ctx, (char *)default_response, sizeof(default_response));
     if (valwrite < 0) {
       perror("webserver (write)");
     }

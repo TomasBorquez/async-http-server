@@ -27,7 +27,7 @@ int CoAwait(CoroCtx *ctx, struct io_uring_sqe *sqe);
 
 ssize_t GetFileSize(int fd);
 
-size_t AsyncRecv(CoroCtx *ctx, void *buff, size_t buff_size);
-size_t AsyncSend(CoroCtx *ctx, void *buff, size_t buff_size);
-size_t AsyncWriteFile(char *file_path, String buff);
+ssize_t AsyncRecv(CoroCtx *ctx, void *buff, size_t buff_size);
+ssize_t AsyncSend(CoroCtx *ctx, void *buff, size_t buff_size);
+ssize_t AsyncWriteFile(char *file_path, String buff);
 FileInfo AsyncReadFile(char *file_path);
