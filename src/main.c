@@ -35,8 +35,9 @@ static char *get_users(Request *req, Response *res) {
 }
 
 static char *create_user(Request *req, Response *res) {
-  char *response = "";
-  cJSON *users_json = cJSON_Parse(req->body);
+  char *response = "CREATED USER";
+  Body body = AsyncReadBody(req);
+  cJSON *users_json = cJSON_Parse(body.data);
   if (users_json == NULL) {
       const char *error_ptr = cJSON_GetErrorPtr();
       if (error_ptr != NULL) {
@@ -52,25 +53,21 @@ static char *create_user(Request *req, Response *res) {
   if (!cJSON_IsString(username) || (username->valuestring == NULL)) {
     res->status = 400;
     response = "INVALID JSON";
-    goto cleanup_username;
+    goto cleanup;
   }
 
   cJSON *email = cJSON_GetObjectItemCaseSensitive(users_json, "email");
   if (!cJSON_IsString(email) || (email->valuestring == NULL)) {
     res->status = 400;
     response = "INVALID JSON";
-    goto cleanup_email;
+    goto cleanup;
   }
 
-  user.username = username->valuestring;
-  user.email = email->valuestring;
+  user.username = strdup(username->valuestring);
+  user.email = strdup(email->valuestring);
   users[users_len++] = user;
   res->status = 201;
 
-cleanup_email:
-  cJSON_Delete(email);
-cleanup_username:
-  cJSON_Delete(username);
 cleanup:
   cJSON_Delete(users_json);
   return response;

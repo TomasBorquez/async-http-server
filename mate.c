@@ -7,7 +7,7 @@ int main() {
     Executable executable = CreateExecutable((ExecutableOptions){
       .output = "main",
       .flags = "-Wall -O3"
-      // .flags = "-Wall -g3 -fsanitize=address,undefined"
+      // .flags = "-Wall -g3 -fsanitize=address,undefined -DACO_USE_ASAN"
     });
 
     AddFile(executable, "./src/main.c");

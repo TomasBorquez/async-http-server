@@ -4,7 +4,7 @@
 #include <liburing.h>
 #include <sys/ioctl.h>
 
-int CoAwait(CoroCtx *ctx, struct io_uring_sqe *sqe ) {
+int CoAwait(CoroCtx *ctx, struct io_uring_sqe *sqe) {
   ctx->type = GENERIC;
   io_uring_sqe_set_data(sqe, ctx);
   io_uring_submit(&g_state.ring);
@@ -28,14 +28,14 @@ ssize_t GetFileSize(int fd) {
   struct stat st;
 
   if (fstat(fd, &st) < 0) {
-    perror("fstat");
+    perror("(GetFileSize/fstat)");
     return -1;
   }
 
   if (S_ISBLK(st.st_mode)) {
     ssize_t bytes;
     if (ioctl(fd, BLKGETSIZE64, &bytes) != 0) {
-      perror("ioctl");
+      perror("(GetFileSize/ioctl)");
       return -1;
     }
 
@@ -53,7 +53,7 @@ FileInfo AsyncReadFile(char *file_path) {
   CoroCtx *ctx = aco_get_arg();
   int file_fd = open(file_path, O_RDONLY);
   if (file_fd < 0) {
-    perror("AsyncReadFile");
+    perror("(open/AsyncReadFile)");
     return (FileInfo) { .data = "", .file_size = 0, .success = false };
   }
 
@@ -67,6 +67,7 @@ FileInfo AsyncReadFile(char *file_path) {
   io_uring_sqe_set_data(sqe, ctx);
   io_uring_submit(&g_state.ring);
   aco_yield();
+  close(file_fd);
   return (FileInfo) { .data = buff, .file_size = file_size };
 }
 
@@ -74,11 +75,16 @@ ssize_t AsyncWriteFile(char *file_path, String buff) {
   CoroCtx *ctx = aco_get_arg();
   int file_fd = open(file_path, O_WRONLY);
   if (file_fd < 0) {
-    perror("AsyncWriteFile");
+    perror("(open/AsyncWriteFile)");
     return -1;
   }
 
   struct io_uring_sqe *sqe = io_uring_get_sqe(&g_state.ring);
   io_uring_prep_write(sqe, file_fd, buff.data, buff.length, 0);
-  return CoAwait(ctx, sqe);
+  ctx->type = GENERIC;
+  io_uring_sqe_set_data(sqe, ctx);
+  io_uring_submit(&g_state.ring);
+  aco_yield();
+  close(file_fd);
+  return ctx->res;
 }

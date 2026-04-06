@@ -3,7 +3,6 @@
 #include <arpa/inet.h>
 #include <liburing.h>
 
-#define ACO_USE_ASAN
 #include "aco.h"
 #include "base.h"
 #include "cJSON.h"
@@ -29,8 +28,8 @@ typedef struct {
   Method method;
   char path[2000];
   HeaderVector headers;
-  char *body;
-  size_t body_length;
+  char *body_start;
+  Arena *arena;
 } Request;
 
 typedef struct {
@@ -76,6 +75,14 @@ bool SkipUntil(char **buffer, char delim);
 
 char *GetHeader(HeaderVector *headers, const char *key);
 bool SetHeader(HeaderVector *headers, const char *key, const char *value);
+
+typedef struct {
+  char *data;
+  size_t len;
+  bool success;
+} Body;
+
+Body AsyncReadBody(Request *req);
 
 void ServerListen(Server *server);
 

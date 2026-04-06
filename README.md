@@ -48,12 +48,19 @@ int main(void) {
     - [x] Async socket handling
     - [x] Add coroutines
     - [x] Async file reading, and file writing
-    - [ ] Async `optional` body parsing
-- [ ] Optimize io_uring
+    - [x] Async `optional` body parsing
+- [ ] Optimize io_uring, bulk complete tasks and mark as seen
+- [ ] Proper error handling
+    - [ ] Error logging, perror, strerror and assertions
+    - [ ] Assert on invalid library user errors
+- [ ] Paths should just be a vector
+- [ ] Cleanup API and add missing basic stuff
 - [ ] Properly free all resources
-- [ ] Graph based routing
 - [ ] Find errors with fuzzing
 - [ ] Stress Test
+
+## Future
+- [ ] Graph based routing
 
 ## Resources
 - https://bruinsslot.jp/post/simple-http-webserver-in-c/
